@@ -8,11 +8,7 @@ dotenv.config();
 connectDB();
 
 const app = express();
-// At the bottom of your server.js, add:
-if (process.env.NODE_ENV !== 'test') {
-  require('./cron/autoUnlock');
-  console.log('Cron jobs started for auto-unlock and fine calculation');
-}
+
 // Middlewares
 app.use(cors());
 app.use(express.json());
@@ -30,4 +26,14 @@ app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/books", require("./routes/bookRoutes"));
 app.use("/api/borrow", require("./routes/borrowRoutes"));
 
-app.listen(process.env.PORT, () => console.log("Server running on port", process.env.PORT));
+// 🔁 Start cron jobs AFTER everything is ready
+if (process.env.NODE_ENV !== "test") {
+  require("./cron/autoUnlock");
+  console.log("Cron jobs started for auto-unlock & fine calculation");
+}
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () =>
+  console.log(`Server running on port ${PORT}`)
+);

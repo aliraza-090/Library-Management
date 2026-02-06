@@ -83,10 +83,19 @@ exports.requestBook = async (req, res) => {
 //////////////////////////////////////////////////////////////
 exports.getAllBorrows = async (req, res) => {
   try {
-    const borrows = await Borrow.find()
-      .populate("bookId", "title department status coverImage")
-      .populate("userId", "fullName rollNo batch email")
-      .sort({ createdAt: -1 });
+  // 🔧 BACKWARD FIX: add issue/due dates to OLD issued records
+await Promise.all(
+  borrows.map(async (b) => {
+    if (b.status === "issued" && !b.issueDate) {
+      b.issueDate = b.updatedAt || b.createdAt;
+      b.dueDate = new Date(
+        b.issueDate.getTime() + 30 * 24 * 60 * 60 * 1000
+      );
+      await b.save();
+    }
+  })
+);
+
 
     // Auto-calculate fines for all issued/overdue books
     borrows.forEach(b => {
