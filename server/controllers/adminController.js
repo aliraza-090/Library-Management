@@ -1,4 +1,6 @@
 const User = require("../models/User");
+const Book = require("../models/Book"); // NEW: Import for stats
+const Borrow = require("../models/Borrow"); // NEW: Import for stats
 const bcrypt = require("bcryptjs");
 
 // Get students by status
@@ -87,16 +89,17 @@ exports.deleteStudent = async (req, res) => {
   res.json({ msg: "Student deleted permanently successfully!" });
 };
 
-// Get dashboard stats
+// Get dashboard stats (UPDATED: Real implementations)
 exports.getStats = async (req, res) => {
   try {
-    const totalBooks = 0; // TODO: Implement Book model if needed
+    const totalBooks = await Book.countDocuments();
     const totalStudents = await User.countDocuments({ role: "student", status: "approved" });
-    const activeBorrows = 0; // TODO: Implement Borrow model if needed
+    const activeBorrows = await Borrow.countDocuments({ status: "issued" });
     const pendingApprovals = await User.countDocuments({ role: "student", status: "pending" });
 
     res.json({ totalBooks, totalStudents, activeBorrows, pendingApprovals });
   } catch (err) {
-    res.status(500).json({ msg: "Failed to fetch stats" });
+    console.error("getStats error:", err);
+    res.status(500).json({ msg: "Failed to fetch stats", message: err.message });
   }
 };

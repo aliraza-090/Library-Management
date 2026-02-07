@@ -3,7 +3,7 @@ const Book = require("../models/Book");
 const User = require("../models/User");
 
 //////////////////////////////////////////////////////////////
-// ➕ STUDENT REQUEST BOOK (Enhanced with 12-day rule)
+// ➕ STUDENT REQUEST BOOK
 //////////////////////////////////////////////////////////////
 exports.requestBook = async (req, res) => {
   try {
@@ -11,7 +11,7 @@ exports.requestBook = async (req, res) => {
     const userId = req.user._id;
 
     if (!bookId) {
-      return res.status(400).json({ error: "Missing required field: bookId" });
+      return res.status(400).json({ error: "Missing bookId" });
     }
 
     const book = await Book.findById(bookId);
@@ -20,434 +20,173 @@ exports.requestBook = async (req, res) => {
     }
 
     if (book.status === "Borrowed") {
-      return res.status(400).json({ error: "Book is currently borrowed by someone else" });
-    }
-
-    // 🔥 Check 12-day rule for rejected requests
-    const rejectedRequest = await Borrow.findOne({
-      bookId,
-      userId,
-      status: "rejected"
-    }).sort({ rejectedDate: -1 });
-
-    if (rejectedRequest && !rejectedRequest.canRequestAgain()) {
-      const rejectDate = new Date(rejectedRequest.rejectedDate);
-      const availableDate = new Date(rejectDate.getTime() + (12 * 24 * 60 * 60 * 1000));
-      return res.status(400).json({ 
-        error: "You can request this book again after 12 days from rejection",
-        availableAfter: availableDate,
-        daysLeft: Math.ceil((availableDate - new Date()) / (1000 * 60 * 60 * 24))
-      });
+      return res.status(400).json({ error: "Book already borrowed" });
     }
 
     const existing = await Borrow.findOne({
       bookId,
       userId,
-      status: { $in: ["requested", "issued", "overdue", "reissue-requested"] },
+      status: { $in: ["requested", "issued", "reissue-requested"] },
     });
 
     if (existing) {
-      return res.status(400).json({
-        error: `You already have an active request for this book (status: ${existing.status})`
-      });
+      return res.status(400).json({ error: "You already requested this book" });
     }
 
     const borrow = new Borrow({
       bookId,
       userId,
       status: "requested",
-      requestType: "borrow"
+      requestType: "borrow",
     });
 
     await borrow.save();
 
-    // Update book status to reserved
-    book.status = "reserved";
+    book.status = "reserved"; // or "Requested" — your choice
     await book.save();
 
-    await borrow.populate("bookId", "title author department coverImage status");
-
     res.status(201).json({
-      message: "Book requested successfully. Waiting for admin approval.",
+      message: "Book request sent to admin",
       borrow,
-      note: "Your request will appear in reservations section"
     });
   } catch (err) {
-    console.error("Error in requestBook:", err);
-    res.status(500).json({ error: "Server error while creating borrow request" });
+    console.error("requestBook error:", err);
+    res.status(500).json({ error: "Server error", message: err.message });
   }
 };
 
 //////////////////////////////////////////////////////////////
-// 📚 GET ALL BORROWS (ADMIN) - Enhanced with fine calculation
+// 📚 ADMIN – GET ALL BORROWS (ROBUST VERSION)
 //////////////////////////////////////////////////////////////
 exports.getAllBorrows = async (req, res) => {
   try {
-  // 🔧 BACKWARD FIX: add issue/due dates to OLD issued records
-await Promise.all(
-  borrows.map(async (b) => {
-    if (b.status === "issued" && !b.issueDate) {
-      b.issueDate = b.updatedAt || b.createdAt;
-      b.dueDate = new Date(
-        b.issueDate.getTime() + 30 * 24 * 60 * 60 * 1000
-      );
-      await b.save();
-    }
-  })
-);
+    const borrows = await Borrow.find()
+      .populate({
+        path: "userId",
+        select: "fullName rollNo batch",
+      })
+      .populate({
+        path: "bookId",
+        select: "title department",
+      })
+      .sort({ createdAt: -1 })
+      .lean(); // faster + easier to modify, prevents population crashes
 
-
-    // Auto-calculate fines for all issued/overdue books
-    borrows.forEach(b => {
-      try {
-        if (b.checkOverdue) b.checkOverdue();
-      } catch (e) {
-        console.warn("checkOverdue failed for borrow", b._id, e);
-      }
-    });
-
-    const formatted = borrows.map(b => ({
-      id: b._id,
-      student: b.userId?.fullName || "Unknown",
-      rollNo: b.userId?.rollNo || "-",
-      batch: b.userId?.batch || "-",
-      book: b.bookId?.title || "Deleted Book",
-      department: b.bookId?.department || "-",
-      requestedOn: b.createdAt.toDateString(),
-      issueDate: b.issueDate ? new Date(b.issueDate).toDateString() : "-",
-      dueDate: b.dueDate ? new Date(b.dueDate).toDateString() : "-",
-      returnDate: b.returnDate ? new Date(b.returnDate).toDateString() : "-",
-      status: b.status,
+    const formatted = borrows.map((b) => ({
+      id: b._id.toString(),
+      student: b.userId?.fullName || "User deleted",
+      rollNo: b.userId?.rollNo || "—",
+      batch: b.userId?.batch || "—",
+      book: b.bookId?.title || "Book deleted",
+      department: b.bookId?.department || "—",
+      requestedOn: b.createdAt ? new Date(b.createdAt).toDateString() : "—",
+      issueDate: b.issueDate ? new Date(b.issueDate).toDateString() : "—",
+      dueDate: b.dueDate ? new Date(b.dueDate).toDateString() : "—",
+      status: b.status || "unknown",
       fine: b.fine || 0,
-      finePaid: b.finePaid || false,
-      requestType: b.requestType || "borrow",
-      canReissue: b.canReissue ? b.canReissue() : true,
-      reissueCount: b.reissueCount || 0
     }));
 
     res.json(formatted);
   } catch (err) {
-    console.error("Error in getAllBorrows:", err);
-    res.status(500).json({ error: "Server error while fetching borrow records" });
+    console.error("getAllBorrows error:", err);
+    res.status(500).json({
+      error: "Failed to fetch borrow requests",
+      message: err.message,
+    });
   }
 };
 
 //////////////////////////////////////////////////////////////
-// ✏ UPDATE STATUS (ADMIN) - Enhanced with reservation logic
+// ✏ ADMIN – UPDATE STATUS
 //////////////////////////////////////////////////////////////
 exports.updateBorrowStatus = async (req, res) => {
   try {
-    const { status, adminNotes } = req.body;
+    const { status } = req.body;
 
-    const allowedStatuses = [
-      "requested", "issued", "returned", "rejected", "overdue",
-      "reissue-requested", "return-requested", "cancelled", "reissued", "return-approved"
-    ];
-
-    if (!status || !allowedStatuses.includes(status)) {
+    if (!["requested", "issued", "returned", "rejected", "reissue-requested"].includes(status)) {
       return res.status(400).json({ error: "Invalid status value" });
     }
 
-    const borrow = await Borrow.findById(req.params.id).populate("bookId");
-    if (!borrow) return res.status(404).json({ error: "Borrow record not found" });
+    const borrow = await Borrow.findById(req.params.id);
+    if (!borrow) {
+      return res.status(404).json({ error: "Borrow record not found" });
+    }
 
-    const oldStatus = borrow.status;
+    const book = await Book.findById(borrow.bookId);
+    if (!book) {
+      return res.status(404).json({ error: "Related book not found" });
+    }
+
     borrow.status = status;
-    if (adminNotes) borrow.adminNotes = adminNotes;
 
-    const book = borrow.bookId;
-
-    // 📌 ISSUE BOOK (Admin approves)
     if (status === "issued") {
       borrow.issueDate = new Date();
-      borrow.dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 1 month
-      if (book) {
-        book.status = "Borrowed";
-        await book.save();
-      }
+      borrow.dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+      book.status = "Borrowed";
+      await book.save();
     }
 
-    // 📌 REJECT REQUEST
-    if (status === "rejected") {
-      borrow.rejectedDate = new Date();
-      if (book && book.status === "reserved") {
-        book.status = "Available";
-        await book.save();
-      }
-    }
-
-    // 📌 RETURN BOOK
-    if (status === "returned" || status === "return-approved") {
+    if (status === "returned") {
       borrow.returnDate = new Date();
-      borrow.actualReturnDate = new Date();
-      
-      // Calculate final fine if overdue
-      if (borrow.dueDate && new Date() > borrow.dueDate) {
-        const diffTime = Math.abs(new Date() - borrow.dueDate);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        const overdueWeeks = Math.ceil(diffDays / 7);
-        borrow.fine = overdueWeeks * 80;
-        borrow.status = "fine-pending";
-      } else {
-        borrow.status = "completed";
-      }
-      
-      if (book) {
-        book.status = "Available";
-        await book.save();
-      }
+      book.status = "Available";
+      await book.save();
     }
-
-    // 🔁 ADMIN APPROVES REISSUE
-    if (status === "reissued") {
-      borrow.reissueCount += 1;
-      borrow.lastReissueDate = new Date();
-      borrow.isReissueLocked = true;
-      borrow.issueDate = new Date();
-      borrow.dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      borrow.status = "issued";
-    }
-
-    // Auto-calculate overdue fine
-    if (borrow.checkOverdue) borrow.checkOverdue();
 
     await borrow.save();
 
-    res.json({ 
-      message: "Status updated successfully", 
-      borrow,
-      oldStatus,
-      newStatus: status
-    });
+    // optional: re-populate for response
+    await borrow.populate([
+      { path: "userId", select: "fullName rollNo batch" },
+      { path: "bookId", select: "title department" },
+    ]);
+
+    res.json({ message: "Status updated", borrow });
   } catch (err) {
-    console.error("Error in updateBorrowStatus:", err);
-    res.status(500).json({ error: "Server error while updating borrow status" });
+    console.error("updateBorrowStatus error:", err);
+    res.status(500).json({ error: "Server error", message: err.message });
   }
 };
 
 //////////////////////////////////////////////////////////////
-// ❌ DELETE REQUEST (ADMIN)
+// ❌ ADMIN – DELETE REQUEST
 //////////////////////////////////////////////////////////////
 exports.deleteBorrow = async (req, res) => {
   try {
     const borrow = await Borrow.findById(req.params.id);
-    if (!borrow) return res.status(404).json({ error: "Borrow record not found" });
+    if (!borrow) {
+      return res.status(404).json({ error: "Borrow not found" });
+    }
 
-    if (["issued", "returned"].includes(borrow.status)) {
-      return res.status(400).json({ error: "Cannot delete active or completed borrow records" });
+    // Optional: only allow delete if not issued/returned
+    if (borrow.status === "issued" || borrow.status === "returned") {
+      return res.status(400).json({ error: "Cannot delete active/returned borrow" });
     }
 
     await Borrow.findByIdAndDelete(req.params.id);
-    res.json({ message: "Borrow request deleted successfully" });
+
+    res.json({ message: "Borrow request deleted" });
   } catch (err) {
-    console.error("Error in deleteBorrow:", err);
-    res.status(500).json({ error: "Server error while deleting borrow record" });
+    console.error("deleteBorrow error:", err);
+    res.status(500).json({ error: "Server error", message: err.message });
   }
 };
 
 //////////////////////////////////////////////////////////////
-// 👨‍🎓 STUDENT MY BORROWS - Enhanced with fine & reissue info
+// 👨‍🎓 STUDENT – MY BORROWS
 //////////////////////////////////////////////////////////////
 exports.getMyBorrows = async (req, res) => {
   try {
     const borrows = await Borrow.find({ userId: req.user._id })
       .populate({
         path: "bookId",
-        select: "title author department coverImage status isbn pages year"
+        select: "title author department coverImage status",
       })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // Calculate fines and check reissue eligibility
-    const enhancedBorrows = borrows.map(b => {
-      // Auto-calculate fine
-      if (b.checkOverdue) b.checkOverdue();
-      
-      const canReissue = b.canReissue ? b.canReissue() : true;
-      const canRequestAgain = b.canRequestAgain ? b.canRequestAgain() : true;
-      
-      return {
-        ...b.toObject(),
-        canReissue,
-        canRequestAgain,
-        // Add human-readable status
-        statusText: getStatusText(b.status),
-        // Calculate days remaining
-        daysRemaining: b.dueDate ? 
-          Math.ceil((b.dueDate - new Date()) / (1000 * 60 * 60 * 24)) : null
-      };
-    });
-
-    res.json(enhancedBorrows);
+    res.json(borrows);
   } catch (err) {
-    console.error("Error in getMyBorrows:", err);
-    res.status(500).json({ error: "Server error while fetching your borrow records" });
+    console.error("getMyBorrows error:", err);
+    res.status(500).json({ error: "Server error", message: err.message });
   }
 };
-
-//////////////////////////////////////////////////////////////
-// 🔁 STUDENT REISSUE REQUEST - Enhanced with lock check
-//////////////////////////////////////////////////////////////
-exports.requestReissue = async (req, res) => {
-  try {
-    const borrow = await Borrow.findById(req.params.id);
-    if (!borrow) return res.status(404).json({ error: "Borrow not found" });
-
-    if (!["issued", "overdue"].includes(borrow.status)) {
-      return res.status(400).json({ error: "Only issued/overdue books can be reissued" });
-    }
-
-    // Check reissue lock (1 month)
-    if (!borrow.canReissue()) {
-      const lastDate = new Date(borrow.lastReissueDate);
-      const unlockDate = new Date(lastDate.getTime() + (30 * 24 * 60 * 60 * 1000));
-      return res.status(400).json({ 
-        error: "Reissue locked for 1 month after last reissue",
-        availableAfter: unlockDate
-      });
-    }
-
-    // Check if fine exists
-    if (borrow.fine > 0 && !borrow.finePaid) {
-      return res.status(400).json({ 
-        error: "Clear outstanding fine before reissuing",
-        fineAmount: borrow.fine
-      });
-    }
-
-    // Create new reissue request
-    const reissueRequest = new Borrow({
-      bookId: borrow.bookId,
-      userId: borrow.userId,
-      parentRequestId: borrow._id,
-      requestType: "reissue",
-      status: "reissue-requested",
-      reissueCount: borrow.reissueCount + 1
-    });
-
-    await reissueRequest.save();
-
-    // Update original request
-    borrow.isReissueLocked = true;
-    borrow.lastReissueDate = new Date();
-    await borrow.save();
-
-    res.json({ 
-      message: "Reissue request sent to admin",
-      requestId: reissueRequest._id,
-      note: "Your request will appear in reservations section"
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-//////////////////////////////////////////////////////////////
-// 📕 STUDENT RETURN REQUEST - Enhanced with fine calculation
-//////////////////////////////////////////////////////////////
-exports.requestReturn = async (req, res) => {
-  try {
-    const borrow = await Borrow.findById(req.params.id);
-    if (!borrow) return res.status(404).json({ error: "Borrow not found" });
-
-    if (!["issued", "overdue"].includes(borrow.status)) {
-      return res.status(400).json({ error: "Only issued books can be returned" });
-    }
-
-    // Calculate final fine
-    if (borrow.checkOverdue) borrow.checkOverdue();
-    
-    // Create return request
-    const returnRequest = new Borrow({
-      bookId: borrow.bookId,
-      userId: borrow.userId,
-      parentRequestId: borrow._id,
-      requestType: "return",
-      status: "return-requested",
-      fine: borrow.fine
-    });
-
-    await returnRequest.save();
-
-    res.json({ 
-      message: "Return request sent to admin",
-      fineAmount: borrow.fine,
-      requestId: returnRequest._id,
-      note: "Your request will appear in reservations section"
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-//////////////////////////////////////////////////////////////
-// ❌ STUDENT CANCEL REQUEST
-//////////////////////////////////////////////////////////////
-exports.cancelRequest = async (req, res) => {
-  try {
-    const borrow = await Borrow.findById(req.params.id);
-    if (!borrow) return res.status(404).json({ error: "Borrow not found" });
-
-    if (!["requested", "reissue-requested", "return-requested"].includes(borrow.status)) {
-      return res.status(400).json({ error: "Only pending requests can be cancelled" });
-    }
-
-    borrow.status = "cancelled";
-    await borrow.save();
-
-    // If it's a borrow request, make book available again
-    if (borrow.requestType === "borrow") {
-      const book = await Book.findById(borrow.bookId);
-      if (book && book.status === "reserved") {
-        book.status = "Available";
-        await book.save();
-      }
-    }
-
-    res.json({ message: "Request cancelled successfully" });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-//////////////////////////////////////////////////////////////
-// 💰 PAY FINE
-//////////////////////////////////////////////////////////////
-exports.payFine = async (req, res) => {
-  try {
-    const borrow = await Borrow.findById(req.params.id);
-    if (!borrow) return res.status(404).json({ error: "Borrow not found" });
-
-    if (borrow.fine <= 0 || borrow.finePaid) {
-      return res.status(400).json({ error: "No fine pending" });
-    }
-
-    borrow.finePaid = true;
-    borrow.status = borrow.status === "fine-pending" ? "completed" : borrow.status;
-    await borrow.save();
-
-    res.json({ 
-      message: "Fine paid successfully",
-      paidAmount: borrow.fine,
-      newStatus: borrow.status
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-// Helper function
-function getStatusText(status) {
-  const statusMap = {
-    "requested": "Pending Approval",
-    "issued": "Issued",
-    "returned": "Returned",
-    "rejected": "Rejected",
-    "overdue": "Overdue",
-    "reissue-requested": "Reissue Requested",
-    "return-requested": "Return Requested",
-    "cancelled": "Cancelled",
-    "fine-pending": "Fine Pending",
-    "completed": "Completed"
-  };
-  return statusMap[status] || status;
-}

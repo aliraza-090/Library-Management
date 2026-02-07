@@ -32,6 +32,15 @@ if (process.env.NODE_ENV !== "test") {
   console.log("Cron jobs started for auto-unlock & fine calculation");
 }
 
+// Global error handler (NEW: to send JSON errors instead of HTML)
+app.use((err, req, res, next) => {
+  console.error("Global error:", err);
+  res.status(500).json({
+    error: "Internal Server Error",
+    message: err.message || "Something went wrong",
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () =>
