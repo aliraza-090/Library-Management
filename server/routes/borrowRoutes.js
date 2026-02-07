@@ -4,6 +4,8 @@ const Borrow = require("../models/Borrow");
 const Book = require("../models/Book");
 const User = require("../models/User");
 const { protect } = require("../middleware/authMiddleware");
+const { isAdmin } = require("../middleware/authMiddleware");
+
 
 
 // 🔹 Helper: calculate fine (₹80 per week after due date)
@@ -73,7 +75,7 @@ router.post("/request", protect, async (req, res) => {
 
 
 // 📚 Admin: get all borrow requests
-router.get("/", async (req, res) => {
+router.get("/",protect , isAdmin ,  async (req, res) => {
   try {
     const borrows = await Borrow.find()
       .populate("bookId")
@@ -182,7 +184,7 @@ router.post("/:id/return", protect, async (req, res) => {
 
 
 // ✏ Admin updates borrow status
-router.put("/:id/status", async (req, res) => {
+router.put("/:id/status",protect , isAdmin,  async (req, res) => {
   try {
     const { status } = req.body;
     const borrow = await Borrow.findById(req.params.id).populate("bookId");
@@ -225,7 +227,7 @@ router.put("/:id/status", async (req, res) => {
 
 
 // ❌ Admin deletes borrow request
-router.delete("/:id", async (req, res) => {
+router.delete("/:id",protect , isAdmin, async (req, res) => {
   try {
     await Borrow.findByIdAndDelete(req.params.id);
     res.json({ message: "Borrow request deleted" });
